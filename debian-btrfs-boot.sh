@@ -2,7 +2,9 @@
 # Name: debian-btrfs-boot.sh
 # Purpose: Configure Debian 12/13 target root on Btrfs with subvolumes during install
 # Author: Don Williams (script implementation by Agent Mode)
+# Author. Uwe Stark
 # Created: 2025-09-07
+# Modified 2026-06-03
 # Usage: Run from Debian installer shell after partitions are created and /target is mounted.
 
 set -eu
@@ -186,7 +188,7 @@ LAYOUT_BLOCK="@            -> /
 @snapshots   -> /.snapshots
 @log         -> /var/log
 @cache       -> /var/cache
-@docker      -> /var/lib/docker"
+@tmp         -> /tmp"
 print_block "$LAYOUT_BLOCK"
 
 if [ "$AUTO_YES" != "true" ]; then
@@ -253,7 +255,7 @@ create_subvol "$TOP_MNT/@home"
 create_subvol "$TOP_MNT/@snapshots"
 create_subvol "$TOP_MNT/@log"
 create_subvol "$TOP_MNT/@cache"
-create_subvol "$TOP_MNT/@docker"
+create_subvol "$TOP_MNT/@tmp"
 
 # Unmount top-level
 if $DRY_RUN; then
@@ -281,38 +283,18 @@ else
   mkdir -p "$TARGET_ROOT"
 fi
 mount_btrfs_subvol "@" "$TARGET_ROOT"
-mkdir -p "$TARGET_EFI" "$TARGET_ROOT/home" "$TARGET_ROOT/.snapshots" "$TARGET_ROOT/var/log" "$TARGET_ROOT/var/cache" "$TARGET_ROOT/var/lib/docker"
+mkdir -p "$TARGET_EFI" "$TARGET_ROOT/home" "$TARGET_ROOT/.snapshots" "$TARGET_ROOT/var/log" "$TARGET_ROOT/var/cache" "$TARGET_ROOT/tmp"
 mount_btrfs_subvol "@home" "$TARGET_ROOT/home"
 mount_btrfs_subvol "@snapshots" "$TARGET_ROOT/.snapshots"
 mount_btrfs_subvol "@log" "$TARGET_ROOT/var/log"
 mount_btrfs_subvol "@cache" "$TARGET_ROOT/var/cache"
-mount_btrfs_subvol "@docker" "$TARGET_ROOT/var/lib/docker"
+mount_btrfs_subvol "@tmp" "$TARGET_ROOT/tmp"
 
 # Mount EFI back
 if $DRY_RUN; then
   log WARN "DRY-RUN: would mount $EFI_DEV $TARGET_EFI"
 else
   mount "$EFI_DEV" "$TARGET_EFI"
-fi
-
-# Configure Docker daemon to use btrfs storage driver (after mounts are in place)
-log STEP "Configuring Docker to use btrfs storage driver"
-DOCKER_DAEMON_JSON="$TARGET_ROOT/etc/docker/daemon.json"
-if $DRY_RUN; then
-  log WARN "DRY-RUN: would write $DOCKER_DAEMON_JSON with storage-driver=btrfs"
-else
-  mkdir -p "$(dirname "$DOCKER_DAEMON_JSON")"
-  if [ -f "$DOCKER_DAEMON_JSON" ]; then
-    BK="$DOCKER_DAEMON_JSON.$(TS).bak"
-    log WARN "Backing up existing daemon.json to $BK"
-    cp -a "$DOCKER_DAEMON_JSON" "$BK" || true
-  fi
-  cat >"$DOCKER_DAEMON_JSON" <<'EOF'
-{
-  "storage-driver": "btrfs"
-}
-EOF
-  chmod 0644 "$DOCKER_DAEMON_JSON" || true
 fi
 
 # Construct new fstab content
@@ -324,12 +306,12 @@ $ROOT_SPEC_ESC /home btrfs $BASE_BTRFS_OPTS,subvol=@home 0 0
 $ROOT_SPEC_ESC /.snapshots btrfs $BASE_BTRFS_OPTS,subvol=@snapshots 0 0
 $ROOT_SPEC_ESC /var/log btrfs $BASE_BTRFS_OPTS,subvol=@log 0 0
 $ROOT_SPEC_ESC /var/cache btrfs $BASE_BTRFS_OPTS,subvol=@cache 0 0
-$ROOT_SPEC_ESC /var/lib/docker btrfs $BASE_BTRFS_OPTS,subvol=@docker 0 0
+$ROOT_SPEC_ESC /tmp btrfs $BASE_BTRFS_OPTS,subvol=@tmp 0 0
 EOF
 )
 
-# Filter out old root/home/.snapshots/var/log/var/cache/var/lib/docker entries; keep others (incl. EFI and swap)
-FSTAB_NEW=$(awk 'BEGIN{skip["/"]=1;skip["/home"]=1;skip["/.snapshots"]=1;skip["/var/log"]=1;skip["/var/cache"]=1;skip["/var/lib/docker"]=1}
+# Filter out old root/home/.snapshots/var/log/var/cache/tmp entries; keep others (incl. EFI and swap)
+FSTAB_NEW=$(awk 'BEGIN{skip["/"]=1;skip["/home"]=1;skip["/.snapshots"]=1;skip["/var/log"]=1;skip["/var/cache"]=1;skip["/tmp"]=1}
   /^#/ || NF==0 { print; next }
   { mp=$2 } (mp in skip){ next } { print }' "$TARGET_ROOT/etc/fstab")
 
